@@ -46,9 +46,9 @@ const mongoose = require('mongoose');
       type: String,
         required: [true, 'Answer is required']
       },
-    intension: { 
+    intention: { 
       type: String, 
-      required: [true, 'Intension is required'] 
+      required: [true, 'Intention is required'] 
     }
 },{
     _id: false
@@ -64,10 +64,10 @@ const behaviouralQuestionSchema = new mongoose.Schema({
         type: String, 
         required: [true, 'Answer is required']
         },
-    intension: {
+    intention: {
 
         type: String,
-        required: [true, 'Intension is required']
+        required: [true, 'Intention is required']
         }
 },{
     _id: false

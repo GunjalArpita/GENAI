@@ -48,13 +48,12 @@ const handleLogout =  async ()=>
 {
     setLoading(true)
     try{
-         const data = await logout()
-    setUser(null)
-
+         await logout()
+         setUser(null)
     }
     catch(err)
     {
-
+        console.error("Logout failed:", err.response?.data?.message || err.message);
     }
     finally{
       setLoading(false)
@@ -91,7 +90,7 @@ useEffect(() => {
     }
 
     getAndSetUser()
-},[])
+},[setUser, setLoading])
 
 return {user,loading,handleRegister,handleLogin,handleLogout}
 

@@ -82,16 +82,9 @@ export async function logout()
 
 export async function getMe()
 {
-try{
     const response = await api.get("/api/auth/get-me",{
         withCredentials:true
     }
     );
     return response.data;   
-
-}
-catch(error){
-    throw error;
-    console.log(error);
-}
 }

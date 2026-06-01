@@ -1,3 +1,4 @@
+require('dotenv').config();
 const { GoogleGenAI } = require("@google/genai")
 const { z } = require("zod")
 const { zodToJsonSchema } = require("zod-to-json-schema")
@@ -38,30 +39,97 @@ async function generateInterviewReport({ resume, selfDescription, jobDescription
                         Self Description: ${selfDescription}
                         Job Description: ${jobDescription}
 
-    IMPORTANT: The response MUST be a single valid JSON object matching this JSON Schema exactly:
-    ${JSON.stringify(zodToJsonSchema(interviewReportSchema))}
+    IMPORTANT: The response MUST be a single valid JSON object with EXACTLY the following structure (do not include any other fields):
+    {
+        "matchScore": 85,
+        "title": "Software Engineer",
+        "technicalQuestions": [
+            {
+                "question": "Sample question",
+                "intention": "Sample intention",
+                "answer": "Sample answer"
+            }
+        ],
+        "behavioralQuestions": [
+            {
+                "question": "Sample question",
+                "intention": "Sample intention",
+                "answer": "Sample answer"
+            }
+        ],
+        "skillGaps": [
+            {
+                "skill": "React",
+                "severity": "low" // must be "low", "medium", or "high"
+            }
+        ],
+        "preparationPlan": [
+            {
+                "day": 1,
+                "focus": "React basics",
+                "tasks": ["Read docs", "Build simple app"]
+            }
+        ]
+    }
 `
 
     try {
-        const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
+        // Max 3 retries for transient model unavailability
+        const maxRetries = 3;
+        let attempt = 0;
+        let response;
+        while (attempt < maxRetries) {
+            try {
+                const jsonSchema = zodToJsonSchema(interviewReportSchema);
+                delete jsonSchema.$schema;
+                response = await ai.models.generateContent({
+                    model: "gemini-2.5-flash",
+                    contents: prompt,
+                    generationConfig: {
+                        responseMimeType: "application/json",
+                        responseSchema: jsonSchema,
+                    },
+                });
+                break; // success
+            } catch (inner) {
+                // Detect model unavailability (503) or network glitches
+                if (inner?.message?.includes("UNAVAILABLE") && attempt < maxRetries - 1) {
+                    attempt++;
+                    console.warn(`Model unavailable, retry ${attempt}/${maxRetries}...`);
+                    await new Promise(res => setTimeout(res, 1000 * attempt)); // simple backoff
+                    continue;
+                }
+                throw inner; // rethrow other errors
             }
-        })
-
-        const parsedResponse = JSON.parse(response.text)
-        
+        }
+        console.log('Raw AI response:', response.text);
+        // Remove possible markdown fences and trim whitespace
+        const cleaned = response.text
+            .replace(/```json\s*/g, "")
+            .replace(/```/g, "")
+            .trim();
+        // Safely parse JSON – if parsing fails, treat it as an error from the model
+        let parsedResponse;
+        try {
+            parsedResponse = JSON.parse(cleaned);
+        } catch (parseErr) {
+            throw new Error(`Invalid JSON from model: ${cleaned}`);
+        }
         // Ensure all required fields are present
         if (!parsedResponse.matchScore || !parsedResponse.technicalQuestions || !parsedResponse.behavioralQuestions || !parsedResponse.skillGaps || !parsedResponse.preparationPlan || !parsedResponse.title) {
-            throw new Error('Missing required fields in AI response')
+            throw new Error('Missing required fields in AI response');
         }
-
-        return parsedResponse
+        return parsedResponse;
     } catch (error) {
-        console.error("Error in generateInterviewReport:", error.message)
-        throw new Error(`Failed to generate interview report: ${error.message}`)
+        console.error("Error in generateInterviewReport:", error.message);
+        return {
+            matchScore: 0,
+            title: "Report Generation Failed",
+            technicalQuestions: [],
+            behavioralQuestions: [],
+            skillGaps: [],
+            preparationPlan: []
+        };
     }
 }
 
@@ -70,7 +138,7 @@ async function generateInterviewReport({ resume, selfDescription, jobDescription
 async function generatePdfFromHtml(htmlContent) {
     try {
         const puppeteer = await import("puppeteer");
-        const browser = await puppeteer.default.launch()
+        const browser = await puppeteer.default.launch({ args: ['--no-sandbox', '--disable-setuid-sandbox'] })
         const page = await browser.newPage();
         await page.setContent(htmlContent, { waitUntil: "networkidle0" })
 
@@ -110,22 +178,53 @@ async function generateResumePdf({ resume, selfDescription, jobDescription }) {
                         The content should be ATS friendly, i.e. it should be easily parsable by ATS systems without losing important information.
                         The resume should not be so lengthy, it should ideally be 1-2 pages long when converted to PDF. Focus on quality rather than quantity and make sure to include all the relevant information that can increase the candidate's chances of getting an interview call for the given job description.
 
-    IMPORTANT: The response MUST be a single valid JSON object matching this JSON Schema exactly:
-    ${JSON.stringify(zodToJsonSchema(resumePdfSchema))}
+    IMPORTANT: The response MUST be a single valid JSON object with EXACTLY the following structure (do not include any other fields):
+    {
+        "html": "<html><body>Your generated HTML content here...</body></html>"
+    }
                     `
 
     try {
-        const response = await ai.models.generateContent({
-            model: "gemini-3-flash-preview",
-            contents: prompt,
-            config: {
-                responseMimeType: "application/json",
+        const maxRetries = 3;
+        let attempt = 0;
+        let response;
+
+        while (attempt < maxRetries) {
+            try {
+                const jsonSchema = zodToJsonSchema(resumePdfSchema)
+                delete jsonSchema.$schema
+
+                response = await ai.models.generateContent({
+                    model: "gemini-2.5-flash",
+                    contents: prompt,
+                    generationConfig: {
+                        responseMimeType: "application/json",
+                        responseSchema: jsonSchema,
+                    }
+                })
+                break;
+            } catch (inner) {
+                if (inner?.message?.includes("UNAVAILABLE") && attempt < maxRetries - 1) {
+                    attempt++;
+                    console.warn(`Model unavailable, retry ${attempt}/${maxRetries}...`);
+                    await new Promise(res => setTimeout(res, 1000 * attempt));
+                    continue;
+                }
+                throw inner;
             }
-        })
+        }
 
-        const jsonContent = JSON.parse(response.text)
-
-        if (!jsonContent.html) {
+        const cleaned = response.text
+            .replace(/```json\s*/g, "")
+            .replace(/```/g, "")
+            .trim()
+        let jsonContent
+        try {
+            jsonContent = JSON.parse(cleaned)
+        } catch (parseErr) {
+            console.warn('AI generation failed, using fallback HTML', parseErr.message)
+            jsonContent = { html: '<html><body><h1>Resume</h1><p>Unable to generate resume content via AI.</p></body></html>' }
+        }        if (!jsonContent.html) {
             throw new Error('No HTML content generated in resume')
         }
 
@@ -139,4 +238,4 @@ async function generateResumePdf({ resume, selfDescription, jobDescription }) {
 
 }
 
-module.exports = { generateInterviewReport, generateResumePdf }
+module.exports = { generateInterviewReport, generateResumePdf, generatePdfFromHtml }

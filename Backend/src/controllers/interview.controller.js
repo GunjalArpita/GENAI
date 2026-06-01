@@ -9,32 +9,57 @@ const interviewReportModel = require("../models/interviewReport.model")
  */
 async function generateInterviewReportController(req, res) {
     try {
-        // Dynamically load pdf-parse to handle module format
-        let pdfParse
-        try {
-            const pdfParseModule = require("pdf-parse")
-            pdfParse = typeof pdfParseModule === 'function' ? pdfParseModule : pdfParseModule.default
-        } catch (moduleError) {
-            console.error("Failed to load pdf-parse module:", moduleError.message)
-            return res.status(500).json({ 
-                message: "PDF parsing library not available",
-                details: moduleError.message 
-            })
-        }
-
-        // Parse PDF if provided
         let resumeText = ""
         if (req.file && req.file.buffer) {
-            let pdfData
-            try {
-                pdfData = await pdfParse(req.file.buffer)
-                resumeText = pdfData.text
-            } catch (pdfError) {
-                console.error("PDF parsing error:", pdfError.message)
-                return res.status(400).json({ 
-                    message: "Error parsing PDF file. Ensure the file is a valid PDF.",
-                    details: pdfError.message 
-                })
+            const filename = req.file.originalname || ""
+            const isDocx = filename.endsWith(".docx") || req.file.mimetype === "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+
+            if (isDocx) {
+                let mammoth
+                try {
+                    mammoth = require("mammoth")
+                } catch (mammothError) {
+                    console.error("Failed to load mammoth module:", mammothError.message)
+                    return res.status(500).json({ 
+                        message: "DOCX parsing library not available",
+                        details: mammothError.message 
+                    })
+                }
+
+                try {
+                    const result = await mammoth.extractRawText({ buffer: req.file.buffer })
+                    resumeText = result.value
+                } catch (docxError) {
+                    console.error("DOCX parsing error:", docxError.message)
+                    return res.status(400).json({ 
+                        message: "Error parsing DOCX file. Ensure the file is a valid DOCX.",
+                        details: docxError.message 
+                    })
+                }
+            } else {
+                // Dynamically load pdf-parse to handle module format
+                let pdfParse
+                try {
+                    const pdfParseModule = require("pdf-parse")
+                    pdfParse = typeof pdfParseModule === 'function' ? pdfParseModule : pdfParseModule.default
+                } catch (moduleError) {
+                    console.error("Failed to load pdf-parse module:", moduleError.message)
+                    return res.status(500).json({ 
+                        message: "PDF parsing library not available",
+                        details: moduleError.message 
+                    })
+                }
+
+                try {
+                    const pdfData = await pdfParse(req.file.buffer)
+                    resumeText = pdfData.text
+                } catch (pdfError) {
+                    console.error("PDF parsing error:", pdfError.message)
+                    return res.status(400).json({ 
+                        message: "Error parsing PDF file. Ensure the file is a valid PDF.",
+                        details: pdfError.message 
+                    })
+                }
             }
         }
         const { selfDescription, jobDescription } = req.body
@@ -53,13 +78,26 @@ async function generateInterviewReportController(req, res) {
             jobDescription
         })
 
+        // Map AI response fields to match Mongoose schema naming
+        const {
+            behavioralQuestions,
+            preparationPlan,
+            ...rest
+        } = interViewReportByAi
+        const adaptedReport = {
+            ...rest,
+            behaviouralQuestions: behavioralQuestions,
+            preparationPlans: preparationPlan,
+        }
+
         const interviewReport = await interviewReportModel.create({
             user: req.user.id,
             resume: resumeText,
             selfDescription,
             jobDescription,
-            ...interViewReportByAi
+            ...adaptedReport
         })
+
 
         res.status(201).json({
             message: "Interview report generated successfully.",
@@ -108,7 +146,7 @@ async function getInterviewReportByIdController(req, res) {
  */
 async function getAllInterviewReportsController(req, res) {
     try {
-        const interviewReports = await interviewReportModel.find({ user: req.user.id }).sort({ createdAt: -1 }).select("-resume -selfDescription -jobDescription -__v -technicalQuestions -behavioralQuestions -skillGaps -preparationPlan")
+        const interviewReports = await interviewReportModel.find({ user: req.user.id }).sort({ createdAt: -1 }).select("-resume -selfDescription -jobDescription -__v -technicalQuestions -behaviouralQuestions -skillGaps -preparationPlans")
 
         res.status(200).json({
             message: "Interview reports fetched successfully.",
@@ -130,16 +168,34 @@ async function getAllInterviewReportsController(req, res) {
 async function generateResumePdfController(req, res) {
     try {
         const { interviewReportId } = req.params
+        
+        if (!interviewReportId) {
+            console.error("Missing interviewReportId in request parameters")
+            return res.status(400).json({ message: "Interview report ID is required" })
+        }
 
         const interviewReport = await interviewReportModel.findById(interviewReportId)
 
         if (!interviewReport) {
+            console.error(`Interview report not found for ID: ${interviewReportId}`)
             return res.status(404).json({
                 message: "Interview report not found."
             })
         }
 
         const { resume, jobDescription, selfDescription } = interviewReport
+
+        // Validate that all necessary data is present before generating PDF
+        if (!resume || !jobDescription || !selfDescription) {
+            console.warn('Insufficient data for PDF generation', {
+                resumePresent: !!resume,
+                jobDescriptionPresent: !!jobDescription,
+                selfDescriptionPresent: !!selfDescription
+            })
+            return res.status(400).json({
+                message: 'Missing required data to generate resume PDF.'
+            })
+        }
 
         const pdfBuffer = await generateResumePdf({ resume, jobDescription, selfDescription })
 
